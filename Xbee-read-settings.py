@@ -1,99 +1,63 @@
 import serial
 import time
 
-def send_api_command(ser, at_command, parameter=None):
-    # Start constructing the frame
-    frame = bytearray()
-    frame.append(0x7E)  # Start delimiter
+def send_at_command(ser, command, parameter=None):
+    # Ensure there's a guard time before sending '+++'
+    ser.flushInput()
+    ser.flushOutput()
+    time.sleep(1)  # At least one second of silence
 
-    # Frame Data
-    frame_data = bytearray()
-    frame_data.append(0x08)  # Frame Type: AT Command
-    frame_data.append(0x01)  # Frame ID
-    frame_data.extend(at_command.encode('ascii'))  # AT Command
-    if parameter is not None:
-        frame_data.extend(parameter)
-
-    # Length
-    length = len(frame_data)
-    frame.append((length >> 8) & 0xFF)  # MSB
-    frame.append(length & 0xFF)         # LSB
-
-    # Add frame data
-    frame.extend(frame_data)
-
-    # Calculate checksum
-    checksum = 0xFF - (sum(frame_data) & 0xFF)
-    frame.append(checksum)
-
-    # Send frame
-    ser.write(frame)
-    print(f"Sent frame for command {at_command}: {frame.hex()}")
+    # Enter command mode
+    ser.write(b'+++')
+    ser.flush()
+    time.sleep(1)  # Wait for the module to enter command mode
 
     # Read response
-    response = read_api_response(ser)
+    response = ser.read(ser.in_waiting).decode()
+    if 'OK' not in response:
+        print("Failed to enter command mode.")
+        return None
+    print("Entered command mode.")
+
+    # Construct the command
+    full_command = command
+    if parameter is not None:
+        full_command += str(parameter)
+    full_command += '\r'
+
+    # Send the command
+    ser.write(full_command.encode())
+    ser.flush()
+    time.sleep(0.5)  # Short delay to wait for the response
+
+    # Read the response
+    response = ser.readline().decode().strip()
+    print(f"Sent command '{full_command.strip()}'. Response: '{response}'")
+
+    # Exit command mode
+    ser.write(b'ATCN\r')
+    ser.flush()
+    time.sleep(0.5)
+    ser.read(ser.in_waiting)  # Clear buffer
+    print("Exited command mode.")
+
     return response
 
-def read_api_response(ser):
-    # Read the start delimiter
-    start_delimiter = ser.read(1)
-    if start_delimiter != b'\x7E':
-        print("Invalid start delimiter:", start_delimiter)
-        return None
-
-    # Read length
-    length_bytes = ser.read(2)
-    if len(length_bytes) < 2:
-        print("Failed to read length bytes.")
-        return None
-    length = (length_bytes[0] << 8) | length_bytes[1]
-
-    # Read frame data and checksum
-    frame_data = ser.read(length + 1)
-    if len(frame_data) < length + 1:
-        print("Incomplete frame data.")
-        return None
-
-    # Extract frame data and checksum
-    frame = frame_data[:-1]
-    checksum = frame_data[-1]
-
-    # Verify checksum
-    calculated_checksum = 0xFF - (sum(frame) & 0xFF)
-    if checksum != calculated_checksum:
-        print("Checksum mismatch.")
-        return None
-
-    print(f"Received response frame: {frame_data.hex()}")
-    return frame_data
-
 def read_parameter(ser, at_command):
-    response = send_api_command(ser, at_command)
+    response = send_at_command(ser, at_command)
     if response:
-        # Extract the parameter value from the response
-        # Frame data format: Frame Type (1 byte), Frame ID (1 byte), AT Command (2 bytes), Status (1 byte), Parameter Value (variable)
-        frame_type = response[0]
-        frame_id = response[1]
-        at_cmd = response[2:4].decode('ascii')
-        status = response[4]
-        parameter_value = response[5:-1]  # Exclude checksum
-
-        if status == 0x00:
-            # Success
-            print(f"{at_command} Response: {parameter_value.hex()}")
-
-            # Convert parameter value to appropriate format
-            if at_command in ['VR', 'HV', 'ID', 'SH', 'SL']:
-                value = int.from_bytes(parameter_value, 'big')
-                return value
-            elif at_command == 'NI':
-                value = parameter_value.decode('ascii')
-                return value
-            else:
-                return parameter_value
+        # Parse the response based on the command
+        if at_command == 'ATNI':
+            # Node Identifier is a string
+            return response
         else:
-            print(f"Failed to read {at_command}. Status: {status}")
-            return None
+            # Other parameters are hexadecimal numbers
+            try:
+                value = int(response, 16)
+                return value
+            except ValueError:
+                print(f"Unable to parse response '{response}' as hexadecimal.")
+                return None
     else:
         print(f"Failed to read {at_command}.")
         return None
@@ -104,12 +68,12 @@ def main():
     print(f"Using serial port: {ser.name}")
 
     # Read various settings from the XBee module
-    firmware_version = read_parameter(ser, 'VR')
-    hardware_version = read_parameter(ser, 'HV')
-    serial_number_high = read_parameter(ser, 'SH')
-    serial_number_low = read_parameter(ser, 'SL')
-    pan_id = read_parameter(ser, 'ID')
-    node_identifier = read_parameter(ser, 'NI')
+    firmware_version = read_parameter(ser, 'ATVR')
+    hardware_version = read_parameter(ser, 'ATHV')
+    serial_number_high = read_parameter(ser, 'ATSH')
+    serial_number_low = read_parameter(ser, 'ATSL')
+    pan_id = read_parameter(ser, 'ATID')
+    node_identifier = read_parameter(ser, 'ATNI')
 
     # Print the settings
     if firmware_version is not None:
