@@ -1,54 +1,70 @@
 import serial
-import time
+from digi.xbee.devices import XBeeDevice
 
-def send_at_command(ser, command, parameter=None):
-    # Enter command mode
-    ser.write(b'+++')
-    time.sleep(1)  # Wait for the module to enter command mode
-    response = ser.read(ser.in_waiting).decode()
-    if 'OK' not in response:
-        print("Failed to enter command mode.")
-        return None
-    print("Entered command mode.")
+# XBee serial port configuration
+PORT = "COM8"  # Change this to your XBee's serial port
+BAUD_RATE = 9600  # Change if your XBee uses a different baud rate
 
-    # Construct the command
-    full_command = command
-    if parameter is not None:
-        full_command += str(parameter)
-    full_command += '\r'
+def get_user_input(prompt, current_value):
+    user_input = input(f"{prompt} (current: {current_value}, 'skip' to keep current): ").strip()
+    return None if user_input.lower() == 'skip' else user_input
 
-    # Send the command
-    ser.write(full_command.encode())
-    time.sleep(1)
-    response = ser.read(ser.in_waiting).decode()
-    print(f"Sent command '{full_command.strip()}'. Response: '{response.strip()}'")
+def set_parameter(xbee, param_name, value, formatter=None):
+    if value is not None:
+        if formatter:
+            try:
+                value = formatter(value)
+            except ValueError as e:
+                print(f"Error: {e}")
+                return
+        xbee.set_parameter(param_name, value)
+        print(f"{param_name} set to: {value}")
+    else:
+        print(f"{param_name} unchanged")
 
-    # Exit command mode
-    ser.write(b'ATCN\r')
-    time.sleep(1)
-    ser.read(ser.in_waiting)  # Clear buffer
-    print("Exited command mode.")
+def pan_id_formatter(value):
+    try:
+        pan_id = int(value, 16)
+        # Assuming the PAN ID can be up to 8 bytes (64 bits) long
+        if pan_id < 0 or pan_id > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError(f"PAN ID must be between 0x0000 and 0xFFFFFFFFFFFFFFFF. Got: {value}")
+        # Convert to bytes, trim leading zeros, but ensure at least one byte
+        return pan_id.to_bytes((pan_id.bit_length() + 7) // 8, byteorder='big') or b'\x00'
+    except ValueError:
+        raise ValueError(f"Invalid PAN ID format. Please enter a valid hexadecimal value. Got: {value}")
 
-    return response.strip()
+# Create and open the XBee device
+xbee = XBeeDevice(PORT, BAUD_RATE)
+xbee.open()
 
-def main():
-    ser = serial.Serial('COM8', 9600, timeout=2)
-    time.sleep(1)
-    print(f"Using serial port: {ser.name}")
+try:
+    # Read current parameters
+    current_pan_id = xbee.get_parameter("ID")
+    current_dh = xbee.get_parameter("DH")
+    current_dl = xbee.get_parameter("DL")
+    current_sh = xbee.get_parameter("SH")
+    current_sl = xbee.get_parameter("SL")
 
-    # Read current PAN ID
-    pan_id = send_at_command(ser, 'ATID')
-    print(f"Current PAN ID: {pan_id}")
+    # Convert current PAN ID from bytes to hex string
+    current_pan_id_hex = current_pan_id.hex()
 
-    # Set PAN ID to 0x1234
-    send_at_command(ser, 'ATID', '12345')
-    print("Set PAN ID to 0x12345.")
+    # Get user input for each parameter
+    new_pan_id = get_user_input("Enter new PAN ID (in hex)", current_pan_id_hex)
+    new_dh = get_user_input("Enter new DH (Destination Address High)", current_dh.hex())
+    new_dl = get_user_input("Enter new DL (Destination Address Low)", current_dl.hex())
 
-    # Write settings to non-volatile memory
-    send_at_command(ser, 'ATWR')
-    print("Settings written to non-volatile memory.")
+    # Set parameters
+    set_parameter(xbee, "ID", new_pan_id, pan_id_formatter)
+    set_parameter(xbee, "DH", new_dh, bytes.fromhex)
+    set_parameter(xbee, "DL", new_dl, bytes.fromhex)
 
-    ser.close()
+    # Print current SH and SL (these are typically read-only)
+    print(f"SH (Serial Number High): {current_sh.hex()}")
+    print(f"SL (Serial Number Low): {current_sl.hex()}")
 
-if __name__ == "__main__":
-    main()
+    print("Parameter update complete.")
+
+finally:
+    # Close the device
+    if xbee is not None and xbee.is_open():
+        xbee.close()
